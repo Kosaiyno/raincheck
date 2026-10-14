@@ -2,13 +2,26 @@
 from genlayer import *
 import json
 
+def _to_address(val) -> Address:
+    """Safely converts input (Address, int big-number from Studio, or hex str) to an Address instance."""
+    if isinstance(val, Address):
+        return val
+    if isinstance(val, int):
+        return Address(f"0x{val:040x}")
+    s = str(val).strip()
+    if s.startswith("0x"):
+        return Address(s)
+    if s.isdigit():
+        return Address(f"0x{int(s):040x}")
+    return Address(s)
+
 class RainCheck(gl.Contract):
     """
     RainCheck - Weather-Triggered Parametric Payout Contract (Prototype)
     
     Demonstrates weather condition verification using GenLayer Intelligent Contract execution.
     Validators evaluate external meteorological evidence against predefined threshold criteria
-    under the Equivalence Principle to reach consensus on payout triggering.
+    under the Equivalence Principle (gl.eq_principle.prompt_non_comparative).
     """
     owner: Address
     agreement_counter: u256
@@ -43,21 +56,22 @@ class RainCheck(gl.Contract):
     @gl.public.view
     def get_agreement(self, agreement_id: u256) -> dict:
         """Retrieves complete details for a given agreement ID."""
-        if agreement_id >= self.agreement_counter:
+        aid = u256(agreement_id)
+        if aid >= self.agreement_counter:
             return {"error": "Agreement does not exist"}
 
         return {
-            "agreement_id": int(agreement_id),
-            "creator": str(self.agreement_creator[agreement_id]),
-            "beneficiary": str(self.agreement_beneficiary[agreement_id]),
-            "location": self.agreement_location[agreement_id],
-            "target_date": self.agreement_date[agreement_id],
-            "threshold_mm": int(self.agreement_threshold_mm[agreement_id]),
-            "payout_simulated": int(self.agreement_payout_simulated[agreement_id]),
-            "status": self.agreement_status[agreement_id],
-            "evidence_source": self.agreement_evidence_source[agreement_id],
-            "reported_rainfall_mm": int(self.agreement_reported_rainfall_mm[agreement_id]),
-            "resolution_notes": self.agreement_resolution_notes[agreement_id],
+            "agreement_id": int(aid),
+            "creator": str(self.agreement_creator[aid]),
+            "beneficiary": str(self.agreement_beneficiary[aid]),
+            "location": self.agreement_location[aid],
+            "target_date": self.agreement_date[aid],
+            "threshold_mm": int(self.agreement_threshold_mm[aid]),
+            "payout_simulated": int(self.agreement_payout_simulated[aid]),
+            "status": self.agreement_status[aid],
+            "evidence_source": self.agreement_evidence_source[aid],
+            "reported_rainfall_mm": int(self.agreement_reported_rainfall_mm[aid]),
+            "resolution_notes": self.agreement_resolution_notes[aid],
             "is_prototype": True
         }
 
@@ -76,21 +90,18 @@ class RainCheck(gl.Contract):
     ) -> u256:
         """
         Creates a new weather trigger agreement.
-        
-        :param beneficiary: Address that receives simulated payout if threshold is met.
-        :param location: Target city / station (e.g., "Austin, TX" or "Station USW00013904").
-        :param target_date: The observation date ("YYYY-MM-DD").
-        :param threshold_mm: Rainfall threshold in millimeters (e.g. 50 mm).
-        :param payout_simulated: Simulated settlement value (e.g. 1000 for $10.00).
         """
         current_id = self.agreement_counter
+        b_addr = _to_address(beneficiary)
+        t_mm = u256(threshold_mm)
+        p_sim = u256(payout_simulated)
 
         self.agreement_creator[current_id] = gl.message.sender_address
-        self.agreement_beneficiary[current_id] = beneficiary
+        self.agreement_beneficiary[current_id] = b_addr
         self.agreement_location[current_id] = location
         self.agreement_date[current_id] = target_date
-        self.agreement_threshold_mm[current_id] = threshold_mm
-        self.agreement_payout_simulated[current_id] = payout_simulated
+        self.agreement_threshold_mm[current_id] = t_mm
+        self.agreement_payout_simulated[current_id] = p_sim
         self.agreement_status[current_id] = "ACTIVE"
         
         self.agreement_evidence_source[current_id] = ""
@@ -109,65 +120,62 @@ class RainCheck(gl.Contract):
     ) -> str:
         """
         Evaluates weather evidence against the agreement threshold and triggers payout.
-        
-        Validators execute this method independently:
-        1. If evidence_url is provided, validators fetch web content deterministically.
-        2. LLM extracts observed precipitation and classifies the condition categorically.
-        3. Agreement state updates to 'PAID_OUT' or 'NOT_TRIGGERED'.
+        Uses GenLayer's Equivalence Principle: gl.eq_principle.prompt_non_comparative.
         """
+        aid = u256(agreement_id)
+
         # 1. State Preconditions
-        if agreement_id >= self.agreement_counter:
+        if aid >= self.agreement_counter:
             return "ERROR: Agreement not found"
         
-        if self.agreement_status[agreement_id] != "ACTIVE":
-            return f"ERROR: Agreement already finalized with status: {self.agreement_status[agreement_id]}"
+        if self.agreement_status[aid] != "ACTIVE":
+            return f"ERROR: Agreement already finalized with status: {self.agreement_status[aid]}"
 
-        location = self.agreement_location[agreement_id]
-        target_date = self.agreement_date[agreement_id]
-        threshold = int(self.agreement_threshold_mm[agreement_id])
+        location = self.agreement_location[aid]
+        target_date = self.agreement_date[aid]
+        threshold = int(self.agreement_threshold_mm[aid])
 
-        # 2. Gather Evidence (Web page or supplied report text)
-        collected_evidence = evidence_text
-        if len(evidence_url.strip()) > 0:
-            try:
-                # Fetch immutable/durable archive or disclosure page
-                web_content = gl.get_web_page(evidence_url)
-                # Keep prompt payload bounded
-                collected_evidence += f"\n[Web Source Content]:\n{web_content[:2500]}"
-            except Exception:
-                collected_evidence += "\n[Warning: Web source fetch failed or timed out]"
+        # 2. Non-deterministic data gathering function for validators
+        def get_input() -> str:
+            collected = str(evidence_text)
+            clean_url = str(evidence_url).strip()
+            if len(clean_url) > 0:
+                try:
+                    resp = gl.nondet.web.get(clean_url)
+                    body_text = resp.body.decode("utf-8") if hasattr(resp, "body") else str(resp)
+                    collected += f"\n[Web Source Content]:\n{body_text[:2000]}"
+                except Exception as e:
+                    collected += f"\n[Warning: Web fetch error: {str(e)[:100]}]"
 
-        # 3. Equivalence Principle Compliant Prompting
-        # Strict categorical decision & integer extraction to ensure multi-model validator agreement
-        prompt = f"""
-You are an objective weather auditor validating a parametric weather insurance trigger.
+            return (
+                f"Target Location: {location}\n"
+                f"Target Observation Date: {target_date}\n"
+                f"Required Rainfall Threshold: >= {threshold} mm within 24 hours\n\n"
+                f"Acquired Weather Evidence:\n{collected}\n"
+            )
 
-AGREEMENT TERMS:
-- Target Location: {location}
-- Target Date: {target_date}
-- Required Rainfall Threshold: >= {threshold} mm within 24h
+        # 3. Equivalence Principle Task & Criteria
+        task = (
+            f"Act as an objective weather auditor. Evaluate the acquired weather evidence for {location} on {target_date}. "
+            f"Determine the total recorded rainfall in whole mm. Compare against the threshold of {threshold} mm. "
+            f"Output a JSON object with keys: 'decision' ('CONDITION_MET', 'CONDITION_NOT_MET', or 'INCONCLUSIVE'), "
+            f"'recorded_rainfall_mm' (integer rounded to nearest mm, 0 if unknown), and 'rationale' (concise 1-sentence explanation)."
+        )
 
-EVIDENCE PROVIDED:
-{collected_evidence}
+        criteria = f"""
+            1. The response must be valid JSON with keys: 'decision', 'recorded_rainfall_mm', and 'rationale'.
+            2. The 'decision' must be exactly 'CONDITION_MET' (if recorded_rainfall_mm >= {threshold}), 'CONDITION_NOT_MET' (if recorded_rainfall_mm < {threshold}), or 'INCONCLUSIVE'.
+            3. The 'recorded_rainfall_mm' must be an integer rounded to the nearest millimeter.
+            4. The 'decision' MUST be factually justified by and consistent with the acquired weather evidence in the input.
+            5. The 'rationale' must concisely state how the evidence justifies the decision.
+        """
 
-TASK:
-1. Determine the official total rainfall (precipitation) in mm recorded for {location} on {target_date}.
-2. Compare the recorded rainfall against the threshold of {threshold} mm.
-3. Make a binary decision:
-   - "CONDITION_MET" if rainfall >= {threshold} mm.
-   - "CONDITION_NOT_MET" if rainfall < {threshold} mm.
-   - "INCONCLUSIVE" if no credible evidence exists for this location and date.
-
-Respond ONLY with valid raw JSON matching this schema:
-{{
-  "decision": "CONDITION_MET" | "CONDITION_NOT_MET" | "INCONCLUSIVE",
-  "recorded_rainfall_mm": <integer rounded to nearest whole mm, 0 if unknown>,
-  "rationale": "<brief 1-sentence explanation of finding>"
-}}
-"""
-
-        # 4. Invoke LLM under Consensus Schema
-        raw_response = gl.call_llm(prompt=prompt, response_format="json")
+        # 4. Execute through GenLayer Equivalence Principle consensus
+        raw_result = gl.eq_principle.prompt_non_comparative(
+            get_input,
+            task=task,
+            criteria=criteria,
+        )
 
         # 5. Safe Parsing with Fallback Consensus Guard
         decision = "INCONCLUSIVE"
@@ -175,7 +183,7 @@ Respond ONLY with valid raw JSON matching this schema:
         rationale = "Execution or parsing error occurred"
 
         try:
-            parsed = json.loads(raw_response)
+            parsed = json.loads(str(raw_result))
             parsed_decision = str(parsed.get("decision", "")).strip().upper()
             if parsed_decision in ["CONDITION_MET", "CONDITION_NOT_MET", "INCONCLUSIVE"]:
                 decision = parsed_decision
@@ -189,18 +197,15 @@ Respond ONLY with valid raw JSON matching this schema:
             rationale = f"Parsing fallback: {str(e)[:100]}"
 
         # 6. Deterministic Settlement & State Transition
-        self.agreement_evidence_source[agreement_id] = evidence_url if evidence_url else "Direct text report"
-        self.agreement_reported_rainfall_mm[agreement_id] = u256(recorded_mm)
-        self.agreement_resolution_notes[agreement_id] = rationale
+        self.agreement_evidence_source[aid] = evidence_url if evidence_url else "Direct meteorological report"
+        self.agreement_reported_rainfall_mm[aid] = u256(recorded_mm)
+        self.agreement_resolution_notes[aid] = rationale
 
         if decision == "CONDITION_MET":
-            # Condition satisfied: Trigger simulated payout
-            self.agreement_status[agreement_id] = "PAID_OUT"
-            return f"PAID_OUT: Trigger met ({recorded_mm} mm >= {threshold} mm). Payout simulated to {self.agreement_beneficiary[agreement_id]}."
+            self.agreement_status[aid] = "PAID_OUT"
+            return f"PAID_OUT: Trigger met ({recorded_mm} mm >= {threshold} mm). Payout simulated to {self.agreement_beneficiary[aid]}."
         elif decision == "CONDITION_NOT_MET":
-            # Condition not satisfied: No payout triggered
-            self.agreement_status[agreement_id] = "NOT_TRIGGERED"
+            self.agreement_status[aid] = "NOT_TRIGGERED"
             return f"NOT_TRIGGERED: Rainfall was {recorded_mm} mm (threshold: {threshold} mm)."
         else:
-            # Evidence insufficient: Retain ACTIVE for resubmission or manual void
             return f"INCONCLUSIVE: Evidence could not verify weather for {location} on {target_date}."
